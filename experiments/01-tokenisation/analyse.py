@@ -3,6 +3,7 @@ from datetime import datetime
 import re
 
 import pandas as pd
+# pyrefly: ignore [missing-import]
 import matplotlib.pyplot as plt
 
 
