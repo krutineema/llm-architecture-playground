@@ -20,6 +20,7 @@ Default model:
 from datetime import datetime
 from pathlib import Path
 
+# pyrefly: ignore [missing-import]
 import ollama
 
 
