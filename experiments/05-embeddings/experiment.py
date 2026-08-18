@@ -1,547 +1,321 @@
 # pyrefly: ignore [missing-import]
-import csv
-from datetime import datetime
-from pathlib import Path
-import sys
-
-# pyrefly: ignore [missing-import]
-import matplotlib.pyplot as plt
-# pyrefly: ignore [missing-import]
 import torch
 # pyrefly: ignore [missing-import]
-import torch.nn.functional as F
+import torch.nn as nn
 # pyrefly: ignore [missing-import]
-from sklearn.decomposition import PCA
+import torch.nn.functional as F
 
 
 # ============================================================
-# Embeddings Experiment
-#
-# Goal:
-# Understand embeddings at an AI-application-architect level:
-#
-#   1. Generate embeddings
-#   2. Inspect dimensions
-#   3. Understand vector lookup
-#   4. Calculate cosine similarity
-#   5. Compare semantically related/unrelated text
-#   6. Visualise an embedding space
-#   7. Implement tiny semantic retrieval
-#
-# This is intentionally NOT an experiment about training an
-# embedding model.
+# Experiment: Understanding Embeddings
 # ============================================================
 
 torch.manual_seed(42)
 
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-OUTPUT_DIR = Path(__file__).parent / "results"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-results_txt_path = OUTPUT_DIR / f"results_{timestamp}.txt"
-
-
-class TeeStream:
-    def __init__(self, filepath, stdout):
-        self.file = open(filepath, "w", encoding="utf-8")
-        self.stdout = stdout
-
-    def write(self, data):
-        self.stdout.write(data)
-        self.file.write(data)
-
-    def flush(self):
-        self.stdout.flush()
-        self.file.flush()
-
-
-sys.stdout = TeeStream(results_txt_path, sys.stdout)
-
-
-# ============================================================
-# 1. A tiny, deterministic "embedding model"
-# ============================================================
-#
-# We use a small neural network to turn a sentence represented
-# by token embeddings into a fixed-size vector.
-#
-# IMPORTANT:
-# This is a teaching model, not a production-quality
-# sentence-embedding model.
-#
-# The purpose is to make the vector mechanics visible and
-# reproducible without depending on an external model/API.
-# ============================================================
+# ------------------------------------------------------------
+# 1. Tiny vocabulary
+# ------------------------------------------------------------
 
 vocab = {
-    "customer": 0,
-    "forgot": 1,
-    "password": 2,
-    "needs": 3,
-    "reset": 4,
-    "change": 5,
-    "login": 6,
-    "credentials": 7,
-    "mortgage": 8,
-    "interest": 9,
-    "rate": 10,
-    "home": 11,
-    "loan": 12,
-    "card": 13,
-    "payment": 14,
-    "failed": 15,
-    "transaction": 16,
-    "declined": 17,
-    "weather": 18,
-    "sunny": 19,
-    "tomorrow": 20,
-    "rain": 21,
-    "account": 22,
-    "forgotten": 23,
+    "cat": 0,
+    "dog": 1,
+    "fish": 2,
+    "car": 3,
+    "bus": 4,
 }
 
-embedding_dim = 16
+vocab_size = len(vocab)
+embedding_dim = 4
 
-word_embedding = torch.nn.Embedding(
-    num_embeddings=len(vocab),
+print("Vocabulary:")
+print(vocab)
+
+
+# ------------------------------------------------------------
+# 2. Create an embedding layer
+# ------------------------------------------------------------
+
+embedding = nn.Embedding(
+    num_embeddings=vocab_size,
     embedding_dim=embedding_dim,
 )
 
+print("\nEmbedding matrix shape:")
+print(embedding.weight.shape)
 
-def tokenize(text):
-    """Very small tokenizer for this teaching experiment."""
-    text = text.lower()
-    punctuation = "?!.,"
-    for char in punctuation:
-        text = text.replace(char, "")
-    return text.split()
+print("\nInitial embedding matrix:")
+print(embedding.weight)
 
 
-def text_to_ids(text):
-    """Convert words to IDs using the tiny vocabulary."""
-    words = tokenize(text)
+# ------------------------------------------------------------
+# 3. Look up individual token embeddings
+# ------------------------------------------------------------
 
-    unknown = [word for word in words if word not in vocab]
-    if unknown:
-        raise ValueError(
-            f"Unknown words {unknown!r}. "
-            f"Add them to vocab before using this sentence."
-        )
+cat_id = torch.tensor([vocab["cat"]])
+dog_id = torch.tensor([vocab["dog"]])
 
-    return torch.tensor(
-        [vocab[word] for word in words],
-        dtype=torch.long,
+cat_vector = embedding(cat_id)
+dog_vector = embedding(dog_id)
+
+print("\nCat embedding:")
+print(cat_vector)
+
+print("\nDog embedding:")
+print(dog_vector)
+
+
+# ------------------------------------------------------------
+# 4. Look up several tokens at once
+# ------------------------------------------------------------
+
+tokens = torch.tensor([
+    vocab["cat"],
+    vocab["dog"],
+    vocab["fish"],
+])
+
+vectors = embedding(tokens)
+
+print("\nToken IDs:")
+print(tokens)
+
+print("\nEmbedding vectors:")
+print(vectors)
+
+print("\nShape:")
+print(vectors.shape)
+
+
+# ------------------------------------------------------------
+# 5. Understand the embedding lookup
+# ------------------------------------------------------------
+
+print("\nChecking whether lookup == selecting rows:")
+
+print(
+    torch.allclose(
+        vectors,
+        embedding.weight[tokens]
+    )
+)
+
+
+# ------------------------------------------------------------
+# 6. Compare embeddings using cosine similarity
+# ------------------------------------------------------------
+
+cat = embedding.weight[vocab["cat"]]
+dog = embedding.weight[vocab["dog"]]
+fish = embedding.weight[vocab["fish"]]
+car = embedding.weight[vocab["car"]]
+
+print("\nCosine similarities:")
+
+print(
+    "cat vs dog:",
+    F.cosine_similarity(
+        cat.unsqueeze(0),
+        dog.unsqueeze(0)
+    ).item()
+)
+
+print(
+    "cat vs fish:",
+    F.cosine_similarity(
+        cat.unsqueeze(0),
+        fish.unsqueeze(0)
+    ).item()
+)
+
+print(
+    "cat vs car:",
+    F.cosine_similarity(
+        cat.unsqueeze(0),
+        car.unsqueeze(0)
+    ).item()
+)
+
+
+# ============================================================
+# 7. A tiny learning problem
+# ============================================================
+
+# We will deliberately create a simple task:
+#
+#   animal tokens -> class 0
+#   vehicle tokens -> class 1
+#
+# The interesting question is:
+#
+# Can the embedding space reorganize itself so that
+# animals become similar and vehicles become similar?
+
+
+animal_ids = torch.tensor([
+    vocab["cat"],
+    vocab["dog"],
+    vocab["fish"],
+])
+
+vehicle_ids = torch.tensor([
+    vocab["car"],
+    vocab["bus"],
+])
+
+animal_labels = torch.zeros(len(animal_ids), dtype=torch.long)
+vehicle_labels = torch.ones(len(vehicle_ids), dtype=torch.long)
+
+
+# ------------------------------------------------------------
+# 8. Simple model: embedding + classifier
+# ------------------------------------------------------------
+
+model = nn.Sequential(
+    nn.Embedding(vocab_size, embedding_dim),
+    nn.Linear(embedding_dim, 2),
+)
+
+optimizer = torch.optim.SGD(
+    model.parameters(),
+    lr=0.5,
+)
+
+
+# ------------------------------------------------------------
+# 9. Inspect embeddings BEFORE learning
+# ------------------------------------------------------------
+
+embedding_layer = model[0]
+
+print("\n\nEmbeddings BEFORE training:")
+
+for word, idx in vocab.items():
+    print(
+        f"{word:>5}:",
+        embedding_layer.weight[idx].detach()
     )
 
 
-def embed_text(text):
-    """
-    Produce one fixed-size vector for a sentence by mean-pooling
-    its token embeddings.
+# ------------------------------------------------------------
+# 10. Training data
+# ------------------------------------------------------------
 
-    This is deliberately simple so that the transformation can
-    be inspected:
+train_tokens = torch.cat([
+    animal_ids,
+    vehicle_ids,
+])
 
-        words -> token IDs -> token vectors -> one text vector
-    """
-    token_ids = text_to_ids(text)
-    token_vectors = word_embedding(token_ids)
-
-    return token_vectors.mean(dim=0)
-
-
-# ============================================================
-# 2. Generate embeddings and inspect dimensions
-# ============================================================
-
-sentences = [
-    "customer forgot password",
-    "customer needs password reset",
-    "change login credentials",
-    "mortgage interest rate",
-    "home loan interest rate",
-    "card payment failed",
-    "transaction declined",
-    "weather sunny tomorrow",
-    "weather rain tomorrow",
-]
-
-print("=" * 70)
-print("1. EMBEDDING DIMENSIONS")
-print("=" * 70)
-
-for sentence in sentences:
-    vector = embed_text(sentence)
-
-    print(f"\nSentence: {sentence}")
-    print(f"Vector shape: {tuple(vector.shape)}")
-    print(f"First 5 dimensions: {vector[:5].detach()}")
+train_labels = torch.cat([
+    animal_labels,
+    vehicle_labels,
+])
 
 
-# ============================================================
-# 3. Make the lookup process explicit
-# ============================================================
-#
-# This connects directly to the tokenisation/embedding lookup
-# experiment we already did earlier.
-#
-# Here we then aggregate token vectors into one sentence vector.
-# ============================================================
+# ------------------------------------------------------------
+# 11. Train
+# ------------------------------------------------------------
 
-example = "customer forgot password"
-example_ids = text_to_ids(example)
-example_token_vectors = word_embedding(example_ids)
-example_sentence_vector = example_token_vectors.mean(dim=0)
+for step in range(500):
 
-print("\n" + "=" * 70)
-print("2. FROM TEXT TO ONE EMBEDDING VECTOR")
-print("=" * 70)
+    optimizer.zero_grad()
 
-print(f"\nText: {example}")
-print(f"Token IDs: {example_ids.tolist()}")
-print(
-    f"Token embedding matrix shape: "
-    f"{tuple(example_token_vectors.shape)}"
-)
-print(
-    f"Sentence embedding shape: "
-    f"{tuple(example_sentence_vector.shape)}"
-)
+    logits = model(train_tokens)
 
-print("\nThe important transformation is:")
-print("text -> token IDs -> token vectors -> fixed-size text vector")
+    loss = F.cross_entropy(
+        logits,
+        train_labels
+    )
+
+    loss.backward()
+
+    optimizer.step()
+
+    if step % 100 == 0:
+        predictions = logits.argmax(dim=1)
+        accuracy = (predictions == train_labels).float().mean()
+
+        print(
+            f"step={step:>3} "
+            f"loss={loss.item():.4f} "
+            f"accuracy={accuracy.item():.2f}"
+        )
 
 
-# ============================================================
-# 4. Cosine similarity
-# ============================================================
+# ------------------------------------------------------------
+# 12. Inspect embeddings AFTER learning
+# ------------------------------------------------------------
 
-def cosine_similarity(text_a, text_b):
-    vector_a = embed_text(text_a)
-    vector_b = embed_text(text_b)
+print("\nEmbeddings AFTER training:")
+
+for word, idx in vocab.items():
+    print(
+        f"{word:>5}:",
+        embedding_layer.weight[idx].detach()
+    )
+
+
+# ------------------------------------------------------------
+# 13. Compare learned similarities
+# ------------------------------------------------------------
+
+learned = embedding_layer.weight.detach()
+
+
+def similarity(word_a, word_b):
+    a = learned[vocab[word_a]]
+    b = learned[vocab[word_b]]
 
     return F.cosine_similarity(
-        vector_a.unsqueeze(0),
-        vector_b.unsqueeze(0),
+        a.unsqueeze(0),
+        b.unsqueeze(0)
     ).item()
 
 
-similarity_pairs = [
-    (
-        "customer forgot password",
-        "customer needs password reset",
-    ),
-    (
-        "customer forgot password",
-        "change login credentials",
-    ),
-    (
-        "mortgage interest rate",
-        "home loan interest rate",
-    ),
-    (
-        "card payment failed",
-        "transaction declined",
-    ),
-    (
-        "customer forgot password",
-        "weather sunny tomorrow",
-    ),
-    (
-        "mortgage interest rate",
-        "weather rain tomorrow",
-    ),
-]
+print("\nLearned cosine similarities:")
 
-print("\n" + "=" * 70)
-print("3. COSINE SIMILARITY")
-print("=" * 70)
-
-similarity_rows = []
-
-for text_a, text_b in similarity_pairs:
-    score = cosine_similarity(text_a, text_b)
-
-    similarity_rows.append(
-        {
-            "text_a": text_a,
-            "text_b": text_b,
-            "cosine_similarity": score,
-        }
-    )
-
-    print(f"\nA: {text_a}")
-    print(f"B: {text_b}")
-    print(f"Cosine similarity: {score:.4f}")
-
-
-# ============================================================
-# 5. Semantic neighbourhood / retrieval dataset
-# ============================================================
-#
-# Think of these as small enterprise documents.
-# ============================================================
-
-documents = [
-    (
-        "doc-001",
-        "Password reset policy",
-        "customer forgotten password reset login credentials",
-    ),
-    (
-        "doc-002",
-        "Account access policy",
-        "customer account login credentials change password",
-    ),
-    (
-        "doc-003",
-        "Mortgage policy",
-        "mortgage home loan interest rate customer",
-    ),
-    (
-        "doc-004",
-        "Payments policy",
-        "card payment transaction declined failed",
-    ),
-    (
-        "doc-005",
-        "Weather notice",
-        "weather sunny rain tomorrow",
-    ),
+pairs = [
+    ("cat", "dog"),
+    ("cat", "fish"),
+    ("dog", "fish"),
+    ("cat", "car"),
+    ("dog", "bus"),
+    ("car", "bus"),
 ]
 
 
-# ============================================================
-# 6. Tiny semantic retrieval
-# ============================================================
-
-def retrieve(query, documents, top_k=3):
-    query_vector = embed_text(query)
-
-    scored = []
-
-    for doc_id, title, text in documents:
-        document_vector = embed_text(text)
-
-        score = F.cosine_similarity(
-            query_vector.unsqueeze(0),
-            document_vector.unsqueeze(0),
-        ).item()
-
-        scored.append(
-            {
-                "id": doc_id,
-                "title": title,
-                "text": text,
-                "score": score,
-            }
-        )
-
-    scored.sort(
-        key=lambda item: item["score"],
-        reverse=True,
-    )
-
-    return scored[:top_k], scored
-
-
-query = "customer forgot login password"
-
-top_results, all_results = retrieve(
-    query,
-    documents,
-    top_k=3,
-)
-
-print("\n" + "=" * 70)
-print("4. TINY SEMANTIC RETRIEVAL")
-print("=" * 70)
-
-print(f"\nQuery: {query}")
-
-print("\nRanked results:")
-
-for rank, result in enumerate(top_results, start=1):
+for a, b in pairs:
     print(
-        f"{rank}. {result['title']} "
-        f"({result['id']}) "
-        f"score={result['score']:.4f}"
+        f"{a:>5} vs {b:<5}: "
+        f"{similarity(a, b):.4f}"
     )
 
 
-# Save retrieval results so they can be shared later.
-retrieval_csv = OUTPUT_DIR / f"retrieval_results_{timestamp}.csv"
+# ------------------------------------------------------------
+# 14. Inspect gradients
+# ------------------------------------------------------------
 
-with retrieval_csv.open(
-    "w",
-    newline="",
-    encoding="utf-8",
-) as file:
-    writer = csv.DictWriter(
-        file,
-        fieldnames=[
-            "rank",
-            "id",
-            "title",
-            "score",
-        ],
-    )
+print("\nGradient experiment:")
 
-    writer.writeheader()
-
-    for rank, result in enumerate(top_results, start=1):
-        writer.writerow(
-            {
-                "rank": rank,
-                "id": result["id"],
-                "title": result["title"],
-                "score": result["score"],
-            }
-        )
-
-print(f"\nSaved: {retrieval_csv}")
-
-
-# ============================================================
-# 7. Visualise the embedding space
-# ============================================================
-#
-# We reduce the 16-dimensional vectors to 2 dimensions using
-# PCA purely for visualisation.
-#
-# IMPORTANT:
-# The 2D plot is NOT the actual embedding space.
-# It is a projection of the original vectors.
-# ============================================================
-
-visualisation_sentences = [
-    "customer forgot password",
-    "customer needs password reset",
-    "change login credentials",
-    "customer account password",
-    "mortgage interest rate",
-    "home loan interest rate",
-    "mortgage customer loan",
-    "card payment failed",
-    "transaction declined",
-    "card transaction payment",
-    "weather sunny tomorrow",
-    "weather rain tomorrow",
-]
-
-visualisation_vectors = torch.stack(
-    [
-        embed_text(sentence).detach()
-        for sentence in visualisation_sentences
-    ]
+small_embedding = nn.Embedding(
+    num_embeddings=vocab_size,
+    embedding_dim=embedding_dim,
 )
 
-pca = PCA(n_components=2)
+input_tokens = torch.tensor([
+    vocab["cat"],
+    vocab["dog"],
+])
 
-coordinates = pca.fit_transform(
-    visualisation_vectors.numpy()
-)
+output = small_embedding(input_tokens)
 
-plt.figure(figsize=(10, 7))
+loss = output.sum()
 
-for index, sentence in enumerate(visualisation_sentences):
-    x, y = coordinates[index]
+loss.backward()
 
-    plt.scatter(x, y)
+print("\nGradient matrix:")
+print(small_embedding.weight.grad)
 
-    plt.annotate(
-        sentence,
-        (x, y),
-        xytext=(5, 5),
-        textcoords="offset points",
-        fontsize=8,
-    )
-
-plt.title("Embedding Space — PCA Projection")
-plt.xlabel("Principal Component 1")
-plt.ylabel("Principal Component 2")
-plt.tight_layout()
-
-plot_path = OUTPUT_DIR / f"embedding_space_{timestamp}.png"
-plt.savefig(plot_path, dpi=150)
-plt.close()
-
-print("\n" + "=" * 70)
-print("5. EMBEDDING SPACE VISUALISATION")
-print("=" * 70)
-
-print(f"\nSaved: {plot_path}")
 print(
-    "\nRemember: PCA projects the original high-dimensional "
-    "vectors into 2D for visualisation."
-)
-
-
-# ============================================================
-# 8. A simple retrieval sensitivity experiment
-# ============================================================
-#
-# Compare different top-k values for the same query.
-#
-# This is intentionally a bridge into RAG rather than a full
-# retrieval evaluation system.
-# ============================================================
-
-print("\n" + "=" * 70)
-print("6. TOP-K RETRIEVAL")
-print("=" * 70)
-
-for k in [1, 2, 3, 5]:
-    results, _ = retrieve(
-        query,
-        documents,
-        top_k=k,
-    )
-
-    print(f"\nTop-{k}:")
-
-    for rank, result in enumerate(results, start=1):
-        print(
-            f"{rank}. {result['title']} "
-            f"score={result['score']:.4f}"
-        )
-
-
-# ============================================================
-# 9. Important observations to make
-# ============================================================
-#
-# Do NOT assume the results will perfectly match intuition.
-#
-# This experiment uses:
-#   - a tiny vocabulary
-#   - random initial token embeddings
-#   - mean pooling
-#   - a tiny synthetic dataset
-#
-# Therefore the results are primarily useful for understanding
-# mechanics, not for judging embedding-model quality.
-#
-# When reviewing the output, look for:
-#
-#   1. What is the vector dimension?
-#   2. How does text become one vector?
-#   3. Which pairs have higher similarity?
-#   4. Which documents are retrieved for the query?
-#   5. Does the ranking always match intuition?
-#   6. What does the 2D PCA plot show?
-#   7. What information is lost when many token vectors become
-#      one fixed-size vector?
-#   8. Why would a production embedding model behave differently?
-#
-# We will use these observations to write the final README.
-# ============================================================
-
-print("\n" + "=" * 70)
-print("EXPERIMENT COMPLETE")
-print("=" * 70)
-print(
-    f"\nNext step: inspect the printed output in {results_txt_path},\n"
-    f"{retrieval_csv} and {plot_path}."
+    "\nNotice which rows received gradients."
 )

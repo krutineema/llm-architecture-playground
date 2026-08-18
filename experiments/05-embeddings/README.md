@@ -1,1551 +1,859 @@
-# 05 — Embeddings Experiment
+# 05a - Embeddings Experiment
 
 ## Purpose
 
-This experiment is designed to build an **AI Application Architect-level understanding of embeddings** and, more importantly, connect embeddings to the retrieval part of a RAG architecture.
+This experiment explores how discrete tokens are represented as vectors before being processed by a Transformer.
 
-The goal is **not** to learn how production embedding models are trained.
+The goal is **not** to understand or implement the mathematics of training embedding models.
 
-The goal is to understand this chain:
+The goal is to build an architectural mental model of:
 
 ```text
 Text
- ↓
+  ↓
+Tokenisation
+  ↓
 Token IDs
- ↓
-Token vectors
- ↓
-Fixed-size text vector
- ↓
-Similarity
- ↓
-Retrieval
- ↓
-Top-k relevant documents
- ↓
-RAG
+  ↓
+Embedding lookup
+  ↓
+Embedding vectors
+  ↓
+Transformer
 ```
 
-The experiment deliberately uses a very small, synthetic embedding setup so that the mechanics are visible.
+This is the level of understanding required for an AI Application Architect / AI Solution Architect.
 
 ---
 
-# 1. What this experiment is trying to teach
+## 1. Why Do We Need Embeddings?
 
-The experiment answers six practical questions:
+An LLM does not operate directly on words or token IDs.
 
-1. What does an embedding vector actually look like?
-2. How do several token vectors become one text embedding?
-3. How can two text embeddings be compared?
-4. What does cosine similarity tell us?
-5. How can embeddings be used for semantic retrieval?
-6. What does an embedding space look like when projected into 2D?
+After tokenisation, text is represented as discrete integer IDs:
 
-The experiment also demonstrates an important architectural lesson:
+"cat" → 17
 
-> **Embeddings provide a mechanism for similarity-based retrieval; they do not guarantee that retrieval is semantically correct.**
+"dog" → 42
 
-That distinction becomes very important when we build RAG.
+"car" → 91
 
----
-
-# 2. Important caveat: this is a teaching embedding model
-
-The most important thing to understand before interpreting the results is that this experiment does **not** use a production-trained sentence embedding model.
-
-It deliberately creates:
-
-```text
-Tiny vocabulary
-     ↓
-Random PyTorch embedding matrix
-     ↓
-Token vectors
-     ↓
-Mean pooling
-     ↓
-16-dimensional sentence vector
-```
-
-The code uses:
-
-```python
-torch.nn.Embedding(...)
-```
-
-with a fixed random seed.
-
-The resulting token embeddings are therefore initially random.
-
-The sentence embedding is produced by mean-pooling the token embeddings:
-
-```text
-sentence
-   ↓
-tokens
-   ↓
-token IDs
-   ↓
-token vectors
-   ↓
-mean()
-   ↓
-one 16-dimensional vector
-```
-
-This is useful for learning the **mechanics**.
-
-It is not an example of how a production semantic embedding model obtains high-quality semantic representations.
-
-This distinction explains several of the surprising results later in the experiment.
-
----
-
-# 3. Experiment structure
-
-The experiment has six stages:
-
-```text
-1. Embedding dimensions
-        ↓
-2. Text → token IDs → token vectors → text vector
-        ↓
-3. Cosine similarity
-        ↓
-4. Tiny semantic retrieval
-        ↓
-5. PCA visualisation
-        ↓
-6. Top-k retrieval
-```
-
-Each stage builds on the previous one.
-
----
-
-# 4. Experiment 1 — Embedding dimensions
-
-The experiment embeds nine example sentences.
-
-Examples include:
-
-```text
-customer forgot password
-customer needs password reset
-change login credentials
-mortgage interest rate
-home loan interest rate
-card payment failed
-transaction declined
-weather sunny tomorrow
-weather rain tomorrow
-```
-
-Every sentence produces:
-
-```text
-Vector shape: (16,)
-```
+These IDs are identifiers, not meaningful numerical representations.
 
 For example:
 
-```text
-customer forgot password
-→
-[0.7282, 0.1522, 0.0600, 0.0171, ...]
-```
+cat = 17
 
-The experiment prints the first five dimensions, but the important observation is the shape:
+dog = 42
 
-```text
-(16,)
-```
+car = 91
 
-## What does this mean?
+The fact that `42` is numerically closer to `17` than `91` tells the model nothing about the meaning of the words.
 
-The text has been converted into a point in a **16-dimensional vector space**.
+The model therefore maps each token ID to a vector:
 
-The vector is not a list of human-readable attributes.
+17
 
-We should not interpret:
+ ↓
 
-```text
-dimension 1 = password
-dimension 2 = customer
-dimension 3 = security
-```
+[0.21, -0.73, 0.14, 0.88, ...]
 
-That is not what the dimensions mean.
+This vector is the token's **embedding**.
 
-The representation is distributed across the vector.
+These vectors provide the numerical representations that can be processed by the Transformer architecture.
 
 ---
 
-# 5. What does embedding dimension mean?
+# 2. What Is an Embedding?
 
-In this experiment:
+At a high level, an embedding is a learned vector representation of a discrete item.
 
-```text
-embedding_dim = 16
-```
+For a vocabulary of `V` tokens and an embedding dimension of `D`, the embedding layer can be thought of as a matrix:
 
-Therefore every sentence is represented by 16 numbers.
+              embedding dimension
+
+                  D columns
+
+             ┌───────────────┐
+
+token 0      │ • • • • • • • │
+
+token 1      │ • • • • • • • │
+
+token 2      │ • • • • • • • │
+
+token 3      │ • • • • • • • │
+
+...          │               │
+
+token V-1    │ • • • • • • • │
+
+             └───────────────┘
+
+                V rows
 
 Conceptually:
 
-```text
-Sentence A → [x1, x2, x3, ..., x16]
-Sentence B → [y1, y2, y3, ..., y16]
-```
+Embedding matrix
 
-A real embedding model might produce hundreds or thousands of dimensions.
+  
 
-The important architectural point is that **dimension is a property of the embedding model and its vector space**.
+E ∈ R^(V × D)
 
-It has practical consequences for:
+where:
 
-- storage
-- indexing
-- retrieval infrastructure
-- memory
-- computational cost
-- potentially latency
-
-Higher dimensionality does not automatically mean better retrieval.
+- `V` = vocabulary size
+- `D` = embedding dimension
+- each row corresponds to one token
+- each row contains that token's vector representation
 
 ---
 
-# 6. Experiment 2 — From text to one embedding vector
+# 3. Embedding Lookup
 
-This is probably the most important mechanical part of the experiment.
+The important insight from this experiment is that an embedding lookup is conceptually very simple.
 
-For:
+Given:
 
-```text
-customer forgot password
-```
+token ID = 17
 
-the experiment produces:
+the embedding layer retrieves row `17` from the embedding matrix.
 
-```text
+Conceptually:
+
+embedding_vector = embedding_matrix[token_id]
+
+For multiple tokens:
+
 Token IDs:
-[0, 1, 2]
-```
 
-Those IDs are looked up in the embedding matrix.
+  
 
-The result is:
+[17, 42, 91]
 
-```text
-3 token vectors × 16 dimensions
-```
+  
 
-so the intermediate shape is:
-
-```text
-(3, 16)
-```
-
-The experiment then performs mean pooling:
-
-```text
-3 token vectors
        ↓
-    mean()
+
+  
+
+Embedding lookup
+
+  
+
        ↓
-1 vector
-       ↓
-(16,)
-```
 
-The complete transformation is therefore:
+  
 
-```text
-"customer forgot password"
-            ↓
-       token IDs
-            ↓
-      token embeddings
-            ↓
-       mean pooling
-            ↓
-    sentence embedding
-```
+[
 
-This connects directly to our earlier tokenisation/transformer experiments.
+  vector for token 17,
+
+  vector for token 42,
+
+  vector for token 91
+
+]
+
+In PyTorch:
+
+embedding = nn.Embedding(
+
+    num_embeddings=vocab_size,
+
+    embedding_dim=embedding_dim
+
+)
+
+  
+
+vectors = embedding(token_ids)
+
+The important architectural takeaway is:
+
+> **An embedding layer maps discrete token IDs into continuous vector representations.**
+
+There is no need to think of the lookup itself as a complex mathematical operation.
 
 ---
 
-# 7. Important distinction: token embeddings vs retrieval embeddings
+# 4. What Does the Embedding Vector Mean?
 
-Our earlier transformer experiment showed the idea:
+This is an important distinction.
 
-```text
-token ID
-   ↓
-embedding lookup
-   ↓
-token vector
-```
+The vector is **not a human-readable representation of a word**.
 
-That is part of a model's internal processing.
+For example:
 
-This experiment takes that basic mechanism one step further for teaching purposes:
+"cat"
 
-```text
-multiple token vectors
-        ↓
-    aggregation
-        ↓
-one vector representing the text
-```
+  
 
-A production retrieval embedding model is more sophisticated than this toy implementation.
+→
 
-The important architectural distinction is:
+  
 
-### Internal token embeddings
+[0.21, -0.73, 0.14, 0.88, ...]
 
-Used as part of a model's internal representation and computation.
+The individual dimensions generally do not correspond to understandable concepts such as:
 
-### Retrieval/text embeddings
+dimension 1 = animal
 
-Produced specifically so that applications can perform operations such as:
+dimension 2 = size
 
-```text
-semantic search
-similarity comparison
-clustering
-retrieval
-```
+dimension 3 = colour
 
-These are related concepts, but they should not be treated as identical.
+Instead, the model learns representations that are useful for the objective it is being trained to perform.
+
+Therefore:
+
+> An embedding is a learned numerical representation, not a manually designed semantic description.
 
 ---
 
-# 8. Experiment 3 — Cosine similarity
+# 5. Initial Embeddings
 
-The experiment compares several pairs of sentences using cosine similarity.
+When an embedding layer is initially created, its vectors are typically initialised without meaningful semantic structure.
 
-The results were:
+For example:
 
-| Sentence A | Sentence B | Cosine similarity |
-|---|---|---:|
-| customer forgot password | customer needs password reset | **0.7407** |
-| customer forgot password | change login credentials | **-0.2316** |
-| mortgage interest rate | home loan interest rate | **0.6733** |
-| card payment failed | transaction declined | **0.1923** |
-| customer forgot password | weather sunny tomorrow | **-0.2195** |
-| mortgage interest rate | weather rain tomorrow | **-0.0307** |
+cat → [ ... ]
 
-These results are particularly useful because they demonstrate both the **power and the limitations** of the toy experiment.
+dog → [ ... ]
+
+fish → [ ... ]
+
+car → [ ... ]
+
+bus → [ ... ]
+
+At this stage, we should **not** assume that:
+
+cat ≈ dog
+
+or:
+
+car ≈ bus
+
+in vector space.
+
+Meaningful structure develops through training.
 
 ---
 
-# 9. What does cosine similarity mean?
+# 6. What Does Training Do?
 
-Cosine similarity compares the angle between two vectors.
+The experiment used a deliberately tiny learning problem:
+
+cat  → animal
+
+dog  → animal
+
+fish → animal
+
+  
+
+car  → vehicle
+
+bus  → vehicle
+
+The model was given an objective that required it to distinguish animals from vehicles.
+
+The embedding vectors were trainable parameters.
+
+During training:
+
+Input token
+
+    ↓
+
+Embedding lookup
+
+    ↓
+
+Vector
+
+    ↓
+
+Classifier
+
+    ↓
+
+Prediction
+
+    ↓
+
+Loss
+
+    ↓
+
+Gradient
+
+    ↓
+
+Parameter update
+
+As training progresses, the embedding vectors change.
+
+The important lesson is:
+
+> **The model learns representations that are useful for the task it is being trained to perform.**
+
+This is more important than the exact mechanics of the gradient update.
+
+---
+
+# 7. Embedding Similarity
+
+We also compared vectors using cosine similarity.
 
 Conceptually:
 
-```text
 Vector A
-   \
-    \
-     \   small angle
-      \
-       \________ Vector B
 
-       high similarity
-```
+   ↘
 
-If two vectors point in similar directions, their cosine similarity is high.
+    angle
 
-If they point in very different directions, the score can be low or negative.
+   ↗
 
-The formula is:
+Vector B
 
-```text
-cosine_similarity(A, B)
-    = (A · B) / (||A|| ||B||)
-```
+Cosine similarity measures how similarly two vectors point.
 
-For this learning journey, the important thing is not the mathematical derivation.
+A value closer to:
 
-The important idea is:
++1
 
-> **We have converted a language comparison problem into a vector comparison problem.**
+means the vectors point in a similar direction.
 
----
+A value closer to:
 
-# 10. What did our similarity results show?
+0
 
-## Password reset pair
+means they are more orthogonal.
 
-```text
-customer forgot password
-customer needs password reset
+A value closer to:
 
-similarity = 0.7407
-```
+-1
 
-This is a strong similarity score in this experiment.
+means they point in opposite directions.
 
-It is encouraging because the two sentences are clearly related.
+In our experiment, the learned vectors could become more aligned with the classification task.
 
-They also share:
+However, this should **not** be interpreted as proof that the model has learned a complete semantic representation of language.
 
-```text
-customer
-password
-```
-
-and the words `forgot`, `needs`, and `reset` belong to the same general conceptual area.
-
-However, we should **not** conclude that the toy model has learned the semantic relationship properly.
-
-It has not been trained as a semantic embedding model.
-
-The result is partly influenced by the shared token vectors and their random geometry.
+The experiment is intentionally tiny and artificial.
 
 ---
 
-## Mortgage pair
+# 8. Gradient Experiment
 
-```text
-mortgage interest rate
-home loan interest rate
+One of the useful observations was that the embedding matrix contains a separate vector for every token.
 
-similarity = 0.6733
-```
+When a batch contains:
 
-Again, this is relatively high.
+[cat, dog]
 
-The sentences share:
+the model performs lookups for those tokens.
 
-```text
-interest
-rate
-```
+The corresponding embedding parameters participate in the computation and receive updates through training.
 
-and the other words are related conceptually.
+This gives us a useful conceptual picture:
 
-But the experiment's simple mean pooling and random token vectors mean that we cannot use this result as evidence of genuine semantic understanding.
+Embedding Matrix
 
----
+  
 
-## Payment pair
+cat  ───────→ vector ──┐
 
-```text
-card payment failed
-transaction declined
+dog  ───────→ vector ──┤
 
-similarity = 0.1923
-```
+fish ───────→ vector   │
 
-This is an especially useful result.
+car  ───────→ vector   │
 
-Humans would probably consider these sentences fairly related:
+bus  ───────→ vector   │
 
-```text
-payment failed
-transaction declined
-```
+                       ↓
 
-But the similarity score is much lower than the password and mortgage examples.
+                    Model
 
-This demonstrates an important lesson:
+                       ↓
 
-> **Similarity quality depends on the quality of the embedding representation.**
+                      Loss
 
-Our toy representation does not understand that:
+                       ↓
 
-```text
-"payment failed"
-```
+                    Updates
 
-and:
-
-```text
-"transaction declined"
-```
-
-are closely related concepts.
-
-A production embedding model is trained specifically to produce more useful semantic relationships.
+The experiment demonstrates that embeddings are **learned model parameters**, not a static dictionary of manually assigned meanings.
 
 ---
 
-## Password vs weather
+# 9. How Embeddings Fit Into an LLM
 
-```text
-customer forgot password
-weather sunny tomorrow
+The most important learning from this experiment is how embeddings fit into the larger LLM pipeline.
 
-similarity = -0.2195
-```
+Raw text
 
-This is a useful sanity check.
+   ↓
 
-The two sentences are unrelated, and the similarity is negative.
+Tokeniser
 
-However:
+   ↓
 
-> A negative score does **not** mean that one sentence is the semantic opposite of the other.
+Tokens
 
-It simply means that, in this vector space, the vectors point in substantially different directions.
+   ↓
+
+Token IDs
+
+   ↓
+
+Embedding lookup
+
+   ↓
+
+Embedding vectors
+
+   ↓
+
+Transformer layers
+
+   │
+
+   ├── Attention
+
+   │
+
+   ├── MLP
+
+   │
+
+   ├── Attention
+
+   │
+
+   ├── MLP
+
+   │
+
+   └── ...
+
+   ↓
+
+Final representation
+
+   ↓
+
+Logits
+
+   ↓
+
+Softmax / decoding
+
+   ↓
+
+Next token
+
+The embedding layer therefore provides the initial numerical representation that enters the Transformer.
+
+---
+
+# 10. Embeddings vs Attention
+
+The previous attention experiment and this experiment answer two different questions.
+
+### Embeddings
+
+> **How do we represent a token as a vector?**
+
+token ID
+
+   ↓
+
+embedding
+
+   ↓
+
+vector
+
+### Attention
+
+> **How can a token's representation incorporate information from other tokens?**
+
+Token representations
+
+        ↓
+
+     Attention
+
+        ↓
+
+Context-aware representations
 
 This distinction is important.
 
----
+An embedding provides an initial representation.
 
-# 11. A major lesson from the similarity experiment
-
-The experiment demonstrates something that is easy to miss when learning about embeddings:
-
-> **Cosine similarity is only as useful as the representation being compared.**
-
-The pipeline is:
-
-```text
-Text
- ↓
-Embedding model
- ↓
-Vector
- ↓
-Cosine similarity
-```
-
-The similarity function is not the intelligent part.
-
-The embedding model determines whether the vector space has useful structure.
-
-This is why production RAG systems need a good embedding model and retrieval evaluation.
+Attention allows representations to interact with the surrounding context.
 
 ---
 
-# 12. Experiment 4 — Tiny semantic retrieval
+# 11. Static Representation vs Contextual Representation
 
-The experiment then moves from comparing pairs of sentences to a miniature retrieval system.
+A useful conceptual distinction is:
 
-We define five synthetic documents:
-
-```text
-doc-001 — Password reset policy
-doc-002 — Account access policy
-doc-003 — Mortgage policy
-doc-004 — Payments policy
-doc-005 — Weather notice
-```
-
-The query is:
-
-```text
-customer forgot login password
-```
-
-The system:
-
-1. embeds the query
-2. embeds every document
-3. calculates cosine similarity
-4. sorts documents by score
-5. returns the top-k results
-
-The architecture is:
-
-```text
-                    Query
-                      ↓
-                Embed query
-                      ↓
-                 Query vector
-                      ↓
-             Compare vectors
-                      ↓
-        ┌─────────────┼─────────────┐
-        ↓             ↓             ↓
-     Document 1    Document 2    Document 3
-        ↓             ↓             ↓
-       score         score         score
-        └─────────────┼─────────────┘
-                      ↓
-                  Sort/rank
-                      ↓
-                    Top-k
-```
-
-This is the fundamental retrieval mechanism behind vector-based RAG.
-
----
-
-# 13. Retrieval results
-
-The experiment produced:
-
-| Rank | Document | Score |
-|---:|---|---:|
-| 1 | Account access policy | **0.7091** |
-| 2 | Password reset policy | **0.6704** |
-| 3 | Mortgage policy | **0.5437** |
-
-The first two results are sensible.
-
-The query:
-
-```text
-customer forgot login password
-```
-
-is clearly related to:
-
-```text
-Account access policy
-```
-
-and:
-
-```text
-Password reset policy
-```
-
-So the experiment successfully demonstrates the **shape of semantic retrieval**:
-
-```text
-query
- ↓
-vector
- ↓
-compare against document vectors
- ↓
-rank
- ↓
-retrieve top-k
-```
-
-But the third result exposes a major limitation.
-
----
-
-# 14. Why is Mortgage policy ranked third?
-
-The result:
-
-```text
-Mortgage policy
-score = 0.5437
-```
-
-is surprisingly high given the query.
-
-A human would probably not consider mortgage policy highly relevant to:
-
-```text
-customer forgot login password
-```
-
-This is not a bug in cosine similarity.
-
-It is a consequence of our **toy embedding representation**.
-
-Remember:
-
-```text
-random token embeddings
-        +
-mean pooling
-        +
-tiny vocabulary
-        +
-tiny synthetic dataset
-```
-
-The model has not learned real semantic relationships.
-
-The vector geometry is therefore partly arbitrary.
-
-This is one of the most important lessons from the experiment:
-
-> **A vector database does not magically create semantic understanding. It retrieves according to the geometry produced by the embedding model.**
-
-If the embedding representation is poor, retrieval will be poor.
-
----
-
-# 15. Top-k experiment
-
-The experiment then varies `k`.
-
-## Top-1
-
-```text
-1. Account access policy
-```
-
-Only the highest-scoring result is returned.
-
-This minimises retrieved context but risks missing useful information.
-
----
-
-## Top-2
-
-```text
-1. Account access policy
-2. Password reset policy
-```
-
-This is probably the most useful result for this particular synthetic query.
-
-Both retrieved documents are relevant.
-
----
-
-## Top-3
-
-```text
-1. Account access policy
-2. Password reset policy
-3. Mortgage policy
-```
-
-The third result introduces irrelevant information.
-
-This demonstrates why `top-k` is an architecture parameter rather than a number we should choose arbitrarily.
-
----
-
-## Top-5
-
-The full collection is returned:
-
-```text
-1. Account access policy       0.7091
-2. Password reset policy       0.6704
-3. Mortgage policy             0.5437
-4. Payments policy             0.0417
-5. Weather notice             -0.2545
-```
-
-The final two documents are clearly poor matches.
-
----
-
-# 16. What does top-k teach us?
-
-Increasing `k` does not necessarily improve retrieval.
-
-It can introduce:
-
-```text
-more context
-      ↓
-more irrelevant information
-      ↓
-larger prompt
-      ↓
-higher token cost
-      ↓
-potentially worse answer quality
-```
-
-Therefore:
-
-> **More retrieved documents does not automatically mean better RAG.**
-
-This connects directly to the context-engineering work we already completed.
-
-The retrieval system needs to find the **right** context, not simply more context.
-
-Later, in RAG experiments, we will investigate:
-
-- chunk size
-- top-k
-- metadata filtering
-- hybrid search
-- reranking
-- retrieval evaluation
-
----
-
-# 17. Experiment 5 — PCA visualisation
-
-The experiment also creates a visual representation of the embedding space.
-
-The actual sentence embeddings have:
-
-```text
-16 dimensions
-```
-
-Humans cannot easily visualise a 16-dimensional space.
-
-So the experiment applies:
-
-```text
-PCA
-```
-
-to project the vectors into two dimensions.
-
-```text
-16-dimensional vectors
-          ↓
-         PCA
-          ↓
-2-dimensional projection
-          ↓
-       scatter plot
-```
-
-The plot therefore gives us an **approximate visual representation** of relationships in the original space.
-
----
-
-# 18. How to interpret the PCA plot
-
-The plot is useful for building intuition.
-
-Some related-looking groups appear in approximately similar regions.
-
-For example, the two weather sentences:
-
-```text
-weather sunny tomorrow
-weather rain tomorrow
-```
-
-appear relatively close to each other.
-
-The password/account-related sentences also appear near one another in parts of the plot.
-
-However, we must be careful.
-
-### The PCA plot does NOT prove semantic understanding.
-
-PCA is a projection.
-
-It takes:
-
-```text
-16 dimensions
-```
-
-and compresses them into:
-
-```text
-2 dimensions
-```
-
-Information is inevitably lost.
-
-Two vectors that appear close in 2D may not be especially close in the original 16-dimensional space.
-
-Conversely, relationships in the original space may be distorted by the projection.
-
-Therefore:
-
-> Use the plot for intuition, not as a retrieval-quality metric.
-
----
-
-# 19. Why the PCA plot is still valuable
-
-Despite the limitation, the plot gives us a useful mental model.
-
-Instead of thinking about:
-
-```text
-[0.7282, 0.1522, 0.0600, ...]
-```
-
-we can think:
-
-```text
-                  embedding space
-
-       ● sentence A
-
-
-                         ● sentence B
-
-
-  ● sentence C
-
-
-                         ● sentence D
-```
-
-Each sentence is represented as a point.
-
-Semantic retrieval is then conceptually:
-
-```text
-Query
-  ●
-  |
-  | find nearby / similar points
-  |
-  +------ ● Document A
-  |
-  +------ ● Document B
-```
-
-This geometric intuition is exactly what we need before moving into vector search and RAG.
-
----
-
-# 20. What this experiment does NOT demonstrate
-
-This is important for interpreting the results correctly.
-
-It does **not** demonstrate the quality of modern production embedding models.
-
-It does not demonstrate:
-
-- transformer-based sentence embeddings
-- sophisticated semantic training objectives
-- multilingual embeddings
-- domain-specific embedding quality
-- production vector indexes
-- approximate nearest-neighbour search
-- hybrid search
-- reranking
-- metadata filtering
-- retrieval evaluation
-- RAG generation
-
-Those are later topics.
-
-The experiment demonstrates the **mechanics and architectural role** of embeddings.
-
----
-
-# 21. The biggest learning: embeddings are a representation layer
-
-The key conceptual model from this experiment is:
-
-```text
-                    TEXT
-                      ↓
-              Embedding model
-                      ↓
-                   VECTOR
-                      ↓
-          similarity / retrieval
-                      ↓
-             relevant context
-                      ↓
-                     LLM
-                      ↓
-                   answer
-```
-
-The embedding model sits between raw information and retrieval.
-
-It is not the answer generator.
-
-It is not the vector database.
-
-It is not the RAG system.
-
-It is one component of the retrieval architecture.
-
----
-
-# 22. Embedding model vs vector database
-
-This distinction is particularly important from an architecture perspective.
-
-### Embedding model
-
-Responsible for:
-
-```text
-text → vector
-```
-
-It determines the representation.
-
-### Vector store/index
-
-Responsible for:
-
-```text
-store vectors
-       +
-search vectors
-       +
-return nearest/similar vectors
-```
-
-The architecture therefore looks like:
-
-```text
-                 Embedding model
-                       ↓
-                      Vector
-                       ↓
-                Vector store/index
-                       ↓
-                  Retrieval
-```
-
-The vector store cannot compensate for a poor embedding representation.
-
----
-
-# 23. Why document and query embeddings must be compatible
-
-The experiment uses the same embedding mechanism for:
-
-```text
-documents
-```
-
-and:
-
-```text
-query
-```
-
-Conceptually:
-
-```text
-Document
-   ↓
-Embedding Model A
-   ↓
-Vector space A
-
-
-Query
-   ↓
-Embedding Model A
-   ↓
-Vector space A
-```
-
-The comparison works because both vectors live in the same representation space.
-
-Changing embedding models can change:
-
-- vector dimensions
-- vector coordinates
-- semantic relationships
-- similarity behaviour
-
-Therefore an embedding-model change in a production RAG system is not necessarily a trivial implementation detail.
-
-It may require re-embedding the existing corpus.
-
----
-
-# 24. Why high similarity does not mean correctness
-
-Suppose a document receives a very high score.
-
-That only tells us:
-
-```text
-query vector
-      ↕
-document vector
-```
-
-are similar according to the embedding model and similarity function.
-
-It does not prove:
-
-```text
-document is correct
-document is current
-document is authoritative
-document answers the question
-user is allowed to access it
-```
-
-This is a critical enterprise architecture distinction.
-
-Retrieval therefore needs other mechanisms such as:
-
-```text
-semantic similarity
-        +
-metadata filtering
-        +
-authorization
-        +
-possibly keyword search
-        +
-possibly reranking
-        +
-evaluation
-```
-
----
-
-# 25. Why this matters for RAG
-
-A simplistic description of RAG might be:
-
-```text
-Put documents in a vector database.
-Search them.
-Send the results to an LLM.
-```
-
-This experiment shows why that description is incomplete.
-
-A production-quality RAG architecture must consider:
-
-```text
-Document ingestion
-       ↓
-Chunking
-       ↓
 Embedding
-       ↓
-Vector/index storage
-       ↓
-Query embedding
-       ↓
-Retrieval
-       ↓
-Filtering
-       ↓
-Possibly reranking
-       ↓
-Context construction
-       ↓
-LLM
-       ↓
-Answer
-       ↓
-Evaluation
-```
 
-The embedding experiment therefore provides the foundation for the next stage of the learning journey.
+  
 
----
+"bank"
 
-# 26. Architecture lessons from this experiment
+  ↓
 
-## Lesson 1 — Embeddings convert representation into geometry
+one initial vector
 
-Instead of comparing raw text directly, we can compare vector representations.
+versus what happens later in the Transformer:
 
-```text
-text → vector → geometry
-```
+"The bank approved the loan."
+
+  
+
+"bank"
+
+   ↓
+
+context
+
+   ↓
+
+contextual representation
+
+The representation of a token is transformed as it passes through the Transformer.
+
+Therefore, the final representation used by the model is much richer than simply the original embedding lookup.
+
+This is one reason we should not think of an embedding as the complete "meaning" of a token.
 
 ---
 
-## Lesson 2 — Similarity is not intelligence
+# 12. What We Need to Know as an AI Architect
 
-Cosine similarity is just a mathematical comparison.
+For the purposes of this learning journey, the following mental model is sufficient:
 
-The intelligence of semantic retrieval comes primarily from the quality of the representation produced by the embedding model.
+### Tokenisation
 
----
+Different models/tokenisers can break text into different tokens.
 
-## Lesson 3 — Poor embeddings produce poor retrieval
-
-Our mortgage result demonstrates this:
-
-```text
-query
-customer forgot login password
-
-↓ retrieval
-
-Mortgage policy
-0.5437
-```
-
-A production system would need a much better embedding model and retrieval strategy.
-
----
-
-## Lesson 4 — Top-k is a trade-off
-
-Increasing top-k can:
-
-- improve recall
-- introduce irrelevant documents
-- increase context size
-- increase token cost
-- potentially reduce answer quality
-
-Therefore top-k should be evaluated rather than blindly chosen.
-
----
-
-## Lesson 5 — Embeddings don't replace metadata
-
-Semantic similarity cannot answer questions such as:
-
-```text
-Is this document current?
-Is this document for the UK?
-Is this document applicable to this product?
-Is this user allowed to see it?
-```
-
-Metadata and authorization remain separate architectural concerns.
-
----
-
-## Lesson 6 — Vector search is only one retrieval strategy
-
-Embedding similarity is powerful, but some queries depend on exact terms.
-
-For example:
-
-```text
-Policy ID: ABC-12345
-```
-
-may be better handled by keyword/exact matching than semantic similarity.
-
-This is why later we will investigate **hybrid retrieval**.
-
----
-
-## Lesson 7 — Retrieval needs evaluation
-
-The experiment gave us an obviously questionable result:
-
-```text
-Mortgage policy → 0.5437
-```
-
-Without inspecting the retrieved documents, a retrieval system could appear to be functioning while returning poor context.
-
-This leads directly to the next RAG concept:
-
-> **How do we measure retrieval quality?**
-
----
-
-# 27. What the experiment taught us about production embedding models
-
-Our toy experiment uses:
-
-```text
-random token embeddings
-        +
-mean pooling
-```
-
-A production embedding model is trained so that its resulting vector space is much more useful for semantic tasks.
-
-The production architecture remains conceptually the same:
-
-```text
 Text
+
  ↓
-Trained embedding model
+
+Tokens
+
  ↓
-High-dimensional vector
+
+Token IDs
+
+### Embedding
+
+Token IDs are mapped to learned vectors.
+
+Token ID
+
  ↓
-Similarity/search
+
+Embedding lookup
+
  ↓
+
+Vector
+
+### Transformer
+
+The vectors are processed through Transformer layers containing mechanisms such as:
+
+Attention
+
+   +
+
+MLP
+
+### Output
+
+The Transformer produces logits representing scores for possible next tokens.
+
+Hidden representation
+
+ ↓
+
+Logits
+
+ ↓
+
+Probabilities / decoding
+
+ ↓
+
+Next token
+
+This is the level of understanding we need for the AI Architect path.
+
+---
+
+# 13. What We Are Deliberately NOT Learning
+
+This experiment deliberately stops before going deep into ML engineering.
+
+We do **not** need to implement or derive:
+
+- Backpropagation through embedding layers
+- Gradient descent mathematics
+- Embedding optimisation algorithms
+- Word2Vec training
+- GloVe
+- Contrastive embedding training
+- Transformer training
+- Distributed training
+- GPU optimisation
+- Embedding model architecture internals
+
+These are valuable topics for ML engineers and ML researchers, but they are outside the primary objective of this learning journey.
+
+The objective is architectural understanding and judgement.
+
+---
+
+# 14. Architect-Level Takeaways
+
+### 1. Token IDs are identifiers
+
+An integer token ID does not itself represent semantic meaning.
+
+"cat" → 17
+
+`17` is simply an identifier.
+
+---
+
+### 2. Embeddings convert discrete IDs into vectors
+
+17
+
+ ↓
+
+[0.21, -0.73, ...]
+
+These vectors are suitable numerical inputs for the neural network.
+
+---
+
+### 3. Embeddings are learned
+
+The model learns useful representations during training.
+
+They are not manually defined semantic dictionaries.
+
+---
+
+### 4. The embedding is only the starting representation
+
+The Transformer subsequently transforms these representations using attention, MLP layers and other mechanisms.
+
+---
+
+### 5. Embeddings are also important outside the LLM itself
+
+The same general idea of representing information as vectors is important in AI application architectures, particularly in systems such as RAG:
+
+```
+Document
+
+   ↓
+
+Embedding model
+
+   ↓
+
+Vector
+
+   ↓
+
+Vector database
+
+and:
+
+User query
+
+   ↓
+
+Embedding model
+
+   ↓
+
+Query vector
+
+   ↓
+
+Similarity search
+
+   ↓
+
 Relevant documents
 ```
+This is where embeddings become particularly important from an AI application architecture perspective.
 
-The difference is the quality of the representation.
-
-This is why we should not confuse:
-
-```text
-"I understand how embeddings work"
-```
-
-with:
-
-```text
-"I know how to build an embedding model."
-```
-
-For our AI architect journey, the first is required; the second is not.
+We therefore need to understand **what embeddings are and how they are used**, without needing to become experts in training embedding models.
 
 ---
 
-# 28. What I should now be able to explain
+# 15. Key Mental Model
 
-After this experiment, I should be able to explain:
+The final mental model from this experiment is:
 
-### What is an embedding?
+              LLM
 
-A numerical vector representation of an input in a learned vector space.
+  
 
-### Why use embeddings?
+Text
 
-To make relationships between inputs computable using vector similarity, enabling capabilities such as semantic search.
-
-### What is embedding dimension?
-
-The number of numerical values in the vector representation.
-
-### What is cosine similarity?
-
-A measure of the angular similarity between two vectors.
-
-### How does text become a vector?
-
-Conceptually:
-
-```text
-text
  ↓
-tokens
+
+Tokenisation
+
  ↓
-token IDs
+
+Token IDs
+
  ↓
-embedding representations
+
+Embedding lookup
+
  ↓
-aggregation / embedding model
+
+Vector representations
+
  ↓
-text vector
-```
 
-### What is semantic retrieval?
+┌─────────────────────────────┐
 
-Embedding the query and candidate documents, comparing their vectors, and ranking documents according to similarity.
+│       Transformer           │
 
-### How does this relate to RAG?
+│                             │
 
-Retrieval identifies useful context which can then be supplied to an LLM to generate a grounded response.
+│   Attention + MLP layers    │
 
-### Does similarity guarantee correctness?
+│                             │
 
-No.
+└─────────────────────────────┘
 
-### Does an embedding replace metadata or authorization?
+ ↓
 
-No.
+Logits
 
-### Does a vector database create semantic understanding?
+ ↓
 
-No.
+Next-token probabilities
 
-The embedding representation determines the quality of the semantic space; the vector store primarily provides storage and retrieval infrastructure.
+ ↓
 
----
+Next token
 
-# 29. What we deliberately do NOT need to learn
+And for an AI application using RAG:
 
-For the AI Application Architect target, we can stop here rather than going deep into:
-
-- embedding model training
-- backpropagation
-- contrastive-learning mathematics
-- loss-function derivations
-- negative sampling
-- GPU optimisation
-- distributed training
-- implementing ANN indexes from scratch
-
-Those are useful specialisations for ML engineers or search/ML infrastructure engineers.
-
-Our next architectural concern is different.
-
----
-
-# 30. Limitations of this specific experiment
-
-The results must be interpreted in light of these limitations:
-
-### 1. Tiny vocabulary
-
-The vocabulary is intentionally very small.
-
-### 2. Random token embeddings
-
-The token embeddings are randomly initialized.
-
-### 3. No semantic training
-
-The embeddings have not been trained to represent sentence meaning.
-
-### 4. Mean pooling
-
-All token vectors are simply averaged.
-
-This loses information about:
-
-- word order
-- syntax
-- emphasis
-- interactions between words
-- context
-
-### 5. Tiny document collection
-
-There are only five synthetic documents.
-
-### 6. Brute-force retrieval
-
-Every query is compared with every document.
-
-This is fine for five documents but is not how we should think about large-scale retrieval infrastructure.
-
-### 7. PCA distortion
-
-The 16-dimensional space is projected into 2D, so the plot is only an approximation.
-
-These limitations are not failures of the experiment.
-
-They are deliberate simplifications that let us see the mechanics.
-
----
-
-# 31. Final mental model
-
-The most important thing to take away is this:
-
-```text
-                     EMBEDDING
-                         |
-                         v
-                      VECTOR
-                         |
-             +-----------+-----------+
-             |                       |
-             v                       v
-       Representation           Similarity
-                                     |
-                                     v
-                                Retrieval
-                                     |
-                                     v
-                              Relevant context
-                                     |
-                                     v
-                                    LLM
-                                     |
-                                     v
-                                  Answer
-```
-
-And in a production RAG system:
-
-```text
 Documents
+
     ↓
-Chunking
-    ↓
+
 Embedding model
+
     ↓
-Vector store/index
+
+Vectors
+
     ↓
-                         Query
-                           ↓
-                    Query embedding
-                           ↓
-                    Retrieval/search
-                           ↓
-                 Metadata / auth filters
-                           ↓
-                      Reranking
-                           ↓
-                  Context construction
-                           ↓
-                          LLM
-                           ↓
-                        Answer
-                           ↓
-                       Evaluation
-```
 
-That is the architectural bridge from **embeddings → RAG**.
+Vector store
+
+    ↓
+
+Similarity retrieval
+
+    ↓
+
+Relevant context
+
+    ↓
+
+LLM
 
 ---
 
-# 32. Final conclusion
+# 16. Questions I Should Be Able to Answer
 
-This experiment is successful if it has changed the mental model from:
+After completing this experiment, I should be able to answer:
 
-> "An embedding is just a bunch of numbers."
+1. Why can't an LLM simply operate on token IDs?
+2. What is an embedding?
+3. What is an embedding vector?
+4. What does an embedding layer do?
+5. What does the embedding matrix represent?
+6. Are embeddings manually assigned meanings?
+7. How do embeddings become useful?
+8. How are embeddings different from attention?
+9. What happens to an embedding after it enters the Transformer?
+10. Why are embeddings useful in RAG?
+11. Why can different embedding models produce different vectors?
+12. Why might changing an embedding model affect retrieval quality?
 
-to:
-
-> **"An embedding is a vector representation that places an input into a vector space. The geometry of that space allows applications to compare representations and perform semantic retrieval. The quality of that retrieval depends heavily on the embedding model and the retrieval architecture around it."**
-
-The most important practical lesson from the actual results is even more valuable:
-
-> **Similarity scores are not truth scores.**
-
-Our retrieval experiment returned:
-
-```text
-Account access policy    0.7091
-Password reset policy    0.6704
-Mortgage policy          0.5437
-```
-
-The first two results make sense; the third demonstrates that similarity-based retrieval can return an apparently plausible but irrelevant document.
-
-That is exactly why production RAG needs:
-
-```text
-good embeddings
-      +
-good chunking
-      +
-retrieval strategy
-      +
-metadata filtering
-      +
-possibly hybrid search
-      +
-possibly reranking
-      +
-evaluation
-```
-
-We should carry this lesson directly into the next stage of the learning journey.
+If I can answer these questions clearly, I have sufficient embedding knowledge for the AI Application Architect / AI Solution Architect path.
 
 ---
 
-# 33. Next step in the AI Architect journey
+# Conclusion
 
-According to the agreed four-week plan, embeddings are one part of the Week 1 foundation. The next major topic is:
+The main lesson from this experiment is not the mathematics of embeddings.
 
-## Inference + Model Selection
+It is the transition:
 
-We should now move toward:
+```
+Discrete world
 
-```text
-Frontier vs smaller models
-Reasoning models
-Open-source models
-Multimodal models
-Embedding models
-Temperature / sampling
-Context limits
-Latency
-Cost
-Throughput
-Fine-tuning vs prompting vs RAG
+──────────────
+
+tokens
+
+token IDs
+
+ ↓
+
+Continuous representation
+
+──────────────────────────
+
+embedding vectors
+
+ ↓
+
+Neural processing
+
+──────────────────
+
+attention
+
+MLP
+
+Transformer layers
+ ↓
+Prediction
+──────────
+logits
+
+probabilities
+
+next token
 ```
 
-The key architect question becomes:
-
-> **How do I choose the right model and application pattern for a particular enterprise requirement?**
-
-That is a much more important next step for the target role than going deeper into embedding internals.
-
----
-
-## Experiment artefacts
-
-The experiment produced:
-
-- timestamped textual output
-- timestamped retrieval results
-- timestamped PCA visualisation
-
-The actual observed output and retrieval scores are documented above and should be treated as the evidence for the conclusions in this README.
+The embedding layer is the bridge between discrete tokenised text and the numerical representations consumed by the Transformer.
